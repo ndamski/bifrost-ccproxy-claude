@@ -1,12 +1,14 @@
-$script:BifrostPort = 8080
-$script:CCProxyPort = 8082
-$script:BifrostDir  = "$env:APPDATA\bifrost"
+$script:BifrostPort  = 8080
+$script:CCProxyPort  = 8082
+$script:BifrostDir   = "$env:APPDATA\bifrost"
+$script:PyProxyDir   = "$env:USERPROFILE\claude-code-proxy"
 
 function Start-Proxy {
     New-Item -ItemType Directory -Force -Path $script:BifrostDir | Out-Null
     Copy-Item "$env:USERPROFILE\config.json" "$script:BifrostDir\config.json" -Force
     Remove-Item "$script:BifrostDir\config.db" -Force -ErrorAction SilentlyContinue
 
+    # Start Bifrost
     Start-Process pwsh `
         -ArgumentList "-NoExit -Command bifrost" `
         -WindowStyle Normal `
@@ -28,11 +30,14 @@ function Start-Proxy {
         Write-Host "Bifrost ready ($([int]$sw.Elapsed.TotalSeconds)s)." -ForegroundColor Gray
     } else {
         Write-Warning "Bifrost did not open port $script:BifrostPort within 15s — check the Bifrost window."
+        return
     }
 
+    # Start Python proxy (replaces CCProxy)
     Start-Process pwsh `
-        -ArgumentList "-NoExit -Command while (`$true) { ccproxy server; Start-Sleep -Seconds 2 }" `
-        -WindowStyle Normal
+        -ArgumentList "-NoExit -Command Set-Location '$script:PyProxyDir'; uv run claude-code-proxy" `
+        -WindowStyle Normal `
+        -WorkingDirectory $script:PyProxyDir
 
     Write-Host "Proxy stack ready." -ForegroundColor Green
 }
@@ -40,33 +45,20 @@ function Start-Proxy {
 function Set-ProxyProvider {
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string]$ModelName
+        [Parameter(Mandatory)][string]$ModelName   # plain model name, no @openai suffix
     )
 
-    $settingsPath = "$env:USERPROFILE\.ccproxy\settings.json"
-    $settingsDir  = Split-Path $settingsPath -Parent
-
-    if (-not (Test-Path $settingsDir)) {
-        New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
-    }
-
-    $settings = [ordered]@{
-        server    = [ordered]@{ port = $script:CCProxyPort; host = "0.0.0.0" }
-        providers = [ordered]@{
-            openai = [ordered]@{
-                apiKey        = "any-string"
-                baseURL       = "http://localhost:$script:BifrostPort/v1"
-                responseStyle = "openai"
-            }
-        }
-        models    = [ordered]@{
-            bigModel          = $ModelName
-            smallModel        = $ModelName
-            preferredProvider = "openai"
-        }
-    }
-
-    $settings | ConvertTo-Json -Depth 5 | Set-Content $settingsPath -Encoding UTF8
+    # Write the Python proxy .env
+    $envPath = "$script:PyProxyDir\.env"
+    $envContent = @"
+OPENAI_BASE_URL=http://localhost:$script:BifrostPort/v1
+OPENAI_API_KEY=any-string
+BIG_MODEL=$ModelName
+MIDDLE_MODEL=$ModelName
+SMALL_MODEL=$ModelName
+PORT=$script:CCProxyPort
+"@
+    Set-Content $envPath -Value $envContent -Encoding UTF8
 
     $env:ANTHROPIC_BASE_URL         = "http://localhost:$script:CCProxyPort"
     $env:ANTHROPIC_API_KEY          = "any-string"
@@ -75,23 +67,24 @@ function Set-ProxyProvider {
     Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
 
     Write-Host "Switched to $Name" -ForegroundColor Cyan
+    Write-Host "  Restart the proxy window for model change to take effect." -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
-# Provider shortcuts
+# Provider shortcuts  (no @openai suffix — Python proxy passes directly to Bifrost)
 # ---------------------------------------------------------------------------
 
-function Use-AIStudio     { Set-ProxyProvider "AI Studio - Gemini 2.5 Flash"      "gemini/gemini-2.5-flash@openai"                 }
-function Use-AIStudioLite { Set-ProxyProvider "AI Studio - Gemini 2.5 Flash Lite" "gemini/gemini-2.5-flash-lite@openai"            }
-function Use-Cerebras     { Set-ProxyProvider "Cerebras - GPT OSS 120B"           "cerebras/gpt-oss-120b@openai"                   }
-function Use-GLM          { Set-ProxyProvider "OpenRouter - GLM 4.7 Flash"        "openrouter/z-ai/glm-4.7-flash@openai"           }
-function Use-MiMo         { Set-ProxyProvider "OpenRouter - MiMo V2 Flash"        "openrouter/xiaomi/mimo-v2-flash@openai"         }
-function Use-FlashLite    { Set-ProxyProvider "OpenRouter - Gemini 2.5 Flash Lite" "openrouter/google/gemini-2.5-flash-lite@openai" }
-function Use-DeepSeek     { Set-ProxyProvider "OpenRouter - DeepSeek V3.2"        "openrouter/deepseek/deepseek-v3.2@openai"       }
-function Use-Mistral      { Set-ProxyProvider "Mistral Small"                     "mistral/mistral-small-latest@openai"            }
+function Use-AIStudio     { Set-ProxyProvider "AI Studio - Gemini 2.5 Flash"       "gemini/gemini-2.5-flash"               }
+function Use-AIStudioLite { Set-ProxyProvider "AI Studio - Gemini 2.5 Flash Lite"  "gemini/gemini-2.5-flash-lite"          }
+function Use-Cerebras     { Set-ProxyProvider "Cerebras - GPT OSS 120B"            "cerebras/gpt-oss-120b"                 }
+function Use-GLM          { Set-ProxyProvider "OpenRouter - GLM 4.7 Flash"         "openrouter/z-ai/glm-4.7-flash"        }
+function Use-MiMo         { Set-ProxyProvider "OpenRouter - MiMo V2 Flash"         "openrouter/xiaomi/mimo-v2-flash"      }
+function Use-FlashLite    { Set-ProxyProvider "OpenRouter - Gemini 2.5 Flash Lite" "openrouter/google/gemini-2.5-flash-lite" }
+function Use-DeepSeek     { Set-ProxyProvider "OpenRouter - DeepSeek V3.2"         "openrouter/deepseek/deepseek-v3.2"    }
+function Use-Mistral      { Set-ProxyProvider "Mistral Small"                      "mistral/mistral-small-latest"         }
 
 function Use-Ollama {
-    # Bypasses Bifrost/CCProxy entirely — call Start-Proxy or another Use-* to return to the proxy stack.
+    # Bypasses Bifrost/Python proxy entirely — call Start-Proxy or another Use-* to return to the proxy stack.
     $env:ANTHROPIC_BASE_URL         = "http://localhost:11434"
     $env:ANTHROPIC_API_KEY          = ""
     $env:ANTHROPIC_MODEL            = "minimax-m2.5:cloud"
@@ -128,10 +121,10 @@ function Test-Models {
         "gemini/gemini-2.5-flash",
         "gemini/gemini-2.5-flash-lite",
         "cerebras/gpt-oss-120b",
-        "z-ai/glm-4.7-flash",
-        "xiaomi/mimo-v2-flash",
-        "google/gemini-2.5-flash-lite",
-        "deepseek/deepseek-v3.2",
+        "openrouter/z-ai/glm-4.7-flash",
+        "openrouter/xiaomi/mimo-v2-flash",
+        "openrouter/google/gemini-2.5-flash-lite",
+        "openrouter/deepseek/deepseek-v3.2",
         "mistral/mistral-small-latest"
     )
 
