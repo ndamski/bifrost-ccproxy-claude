@@ -11,6 +11,13 @@ Claude Code  →  CCProxy (:8082)  →  Bifrost (:8080)  →  Provider APIs
 - **Bifrost** handles provider routing, key management, and load balancing.
 - **PowerShell functions** manage startup and model switching.
 
+## Installation
+
+```bash
+git clone https://github.com/ndamski/bifrost-ccproxy-claude.git
+cd bifrost-ccproxy-claude
+```
+
 ## Prerequisites
 
 | Tool | Notes |
@@ -96,3 +103,4 @@ Test-Models        # Pings all configured models via Bifrost
 ## License
 
 MIT
+
